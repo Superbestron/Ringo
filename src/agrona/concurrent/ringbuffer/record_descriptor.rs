@@ -1,18 +1,18 @@
 use crate::bit_util::SIZE_OF_INT;
 
-pub const HEADER_LENGTH: usize = SIZE_OF_INT << 1;
+pub const HEADER_LENGTH: i32 = SIZE_OF_INT << 1;
 
-pub const ALIGNMENT: usize = HEADER_LENGTH;
+pub const ALIGNMENT: i32 = HEADER_LENGTH;
 
-pub fn length_offset(record_offset: usize) -> usize {
+pub fn length_offset(record_offset: i32) -> i32 {
     record_offset
 }
 
-pub fn type_offset(record_type: usize) -> usize {
+pub fn type_offset(record_type: i32) -> i32 {
     record_type + SIZE_OF_INT
 }
 
-pub fn encoded_msg_offset(record_type: usize) -> usize {
+pub fn encoded_msg_offset(record_type: i32) -> i32 {
     record_type + HEADER_LENGTH
 }
 

@@ -22,14 +22,14 @@ impl MyClass {
     }
 }
 
-fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
+fn new<T>(cap: Option<i32>) -> (Sender<T>, Receiver<T>) {
     match cap {
         None => unbounded(),
         Some(cap) => bounded(cap),
     }
 }
 
-fn spsc_chan(cap: Option<usize>) {
+fn spsc_chan(cap: Option<i32>) {
     let (tx1, rx1) : (Sender<MyClass>, Receiver<MyClass>) = new(cap);
     let (tx2, rx2) : (Sender<MyClass>, Receiver<MyClass>) = new(cap);
     // let (tx1, rx1) : (Sender<Box<MyClass>>, Receiver<Box<MyClass>>) = new(cap);
@@ -58,7 +58,7 @@ fn spsc_chan(cap: Option<usize>) {
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            if set.len() < MAX_IN_FLIGHTS as usize {
+            if set.len() < MAX_IN_FLIGHTS as i32 {
                 let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as i64;
                 let msg = MyClass::new(seq, ts);
                 // let msg = Arc::new(MyClass::new(seq, ts));
@@ -86,7 +86,7 @@ fn spsc_chan(cap: Option<usize>) {
     }).unwrap();
 }
 
-fn spsc(cap: usize) {
+fn spsc(cap: i32) {
     let q1 : AtomicRingBuffer<MyClass> = AtomicRingBuffer::with_capacity(cap);
     let q2 : AtomicRingBuffer<MyClass> = AtomicRingBuffer::with_capacity(cap);
 
@@ -113,15 +113,15 @@ fn spsc(cap: usize) {
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            if set.len() < MAX_IN_FLIGHTS as usize {
+            if set.len() < MAX_IN_FLIGHTS as i32 {
                 let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as i64;
-                let mut msg = MyClass::new(seq, ts);
+                let msg = MyClass::new(seq, ts);
                 match q1.try_push(msg) {
                     Ok(_) => {
                         set.insert(seq);
                         seq += 1;
                     }
-                    Err(tried) => {msg = tried}
+                    Err(_) => {}
                 }
             }
             loop {

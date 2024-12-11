@@ -1,28 +1,48 @@
-use std::ptr;
-use std::sync::atomic::{compiler_fence, Ordering};
-use byteorder::ByteOrder;
-use crate::agrona::concurrent::atomic_buffer;
 use crate::agrona::concurrent::atomic_buffer::AtomicBuffer;
+use crate::agrona::concurrent::ringbuffer::ring_buffer_descriptor::TRAILER_LENGTH;
 use crate::agrona::direct_buffer::DirectBuffer;
-use crate::agrona::mutable_direct_buffer::MutableDirectBuffer;
+use std::ptr;
+use std::sync::atomic::{fence, Ordering};
 
 const SHOULD_BOUNDS_CHECK: bool = false;
 pub struct UnsafeBuffer {
     // not sure if to use a bytebuffer
-    wrap_adjustment: usize,
-    byte_array: [u8],
-    address_offset: usize,
-    capacity: usize,
+    wrap_adjustment: i32,
+    byte_array: Box<[u8]>,
+    address_offset: i32,
+    capacity: i32,
 }
 
+unsafe impl Sync for UnsafeBuffer {}
+
 impl UnsafeBuffer {
-    fn new() -> Self {
-        // UnsafeBuffer {
-        //
-        // }
+    pub fn new(capacity: usize) -> Self {
+        let actual_capacity = capacity + TRAILER_LENGTH as usize;
+        UnsafeBuffer {
+            wrap_adjustment: 0,
+            byte_array: vec![0u8; actual_capacity].into_boxed_slice(),
+            address_offset: 0,
+            capacity: actual_capacity as i32,
+        }
     }
 
-    fn bounds_check_wrap(&self, offset: usize, length: usize, capacity: usize) -> Result<(), String> {
+    fn bounds_check0(&self, index: i32, length: i32) -> Result<(), String> {
+        let resulting_position = index + length;
+        if index < 0 || length < 0 || resulting_position > self.capacity {
+            let tmp = &self.capacity;
+            return Err(format!("index={index} length={length} capacity={tmp}"));
+        }
+        Ok(())
+    }
+
+    fn ensure_capacity(&mut self, index: i32, length: i32) -> Result<(), String> {
+        if SHOULD_BOUNDS_CHECK {
+            self.bounds_check0(index, length)?;
+        }
+        Ok(())
+    }
+
+    fn bounds_check_wrap(&self, offset: i32, length: i32, capacity: i32) -> Result<(), String> {
         if offset < 0 {
             return Err(format!("invalid offset={}", offset));
         }
@@ -40,430 +60,344 @@ impl UnsafeBuffer {
 
 impl AtomicBuffer for UnsafeBuffer {
     fn verify_alignment(&self) {
-        // self.byte_array != null
+        // only need check alignemnt if we are dealing with raw bytes
     }
 
-    fn get_long_volatile(&self, index: usize) -> i64 {
+    fn get_long_volatile(&self, index: i32) -> i64 {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
+            ptr::read_volatile(ptr)
+        }
+    }
+
+    fn put_long_volatile(&self, index: i32, value: i64) {
         todo!()
     }
 
-    fn put_long_volatile(&self, index: usize, value: i64) {
+    fn put_long_ordered(&mut self, index: i32, value: i64) {
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i64;
+            ptr::write_unaligned(ptr, value);
+        }
+    }
+
+    fn add_long_ordered(&self, index: i32, increment: i64) {
         todo!()
     }
 
-    fn put_long_ordered(&self, index: usize, value: i64) {
+    fn compare_and_set_long(&self, index: i32, expected_value: i64, update_value: i64) {
         todo!()
     }
 
-    fn add_long_ordered(&self, index: usize, increment: i64) {
+    fn get_and_set_long(&self, index: i32, value: i64) -> i64 {
         todo!()
     }
 
-    fn compare_and_set_long(&self, index: usize, expected_value: i64, update_value: i64) {
+    fn get_and_add_long(&self, index: i32, delta: i64) -> i64 {
         todo!()
     }
 
-    fn get_and_set_long(&self, index: usize, value: i64) -> i64 {
+    fn get_int_volatile(&self, index: i32) -> i32 {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i32;
+            ptr::read_volatile(ptr)
+        }
+    }
+
+    fn put_int_volatile(&mut self, index: i32, value: i32) {
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            ptr::write_volatile(ptr, value);
+        }
+    }
+
+    fn put_int_ordered(&mut self, index: i32, value: i32) {
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            ptr::write_unaligned(ptr, value);
+        }
+    }
+
+    fn add_int_ordered(&mut self, index: i32, increment: i32) {
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let current_value = ptr::read_volatile(ptr);
+            ptr::write_unaligned(ptr, current_value + increment);
+            fence(Ordering::Release);
+        }
+    }
+
+    fn compare_and_set_int(&mut self, index: i32, expected_value: i32, update_value: i32) -> Result<bool, String> {
+        if SHOULD_BOUNDS_CHECK {
+            self.bounds_check0(index, expected_value)?
+        }
+
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let current_value = ptr::read_volatile(ptr);
+            if current_value == expected_value {
+                ptr::write_volatile(ptr, update_value);
+                return Ok(true)
+            }
+            Ok(false)
+        }
+    }
+
+    fn get_and_set_int(&self, index: i32, value: i32) -> i32 {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let current_value = ptr::read_volatile(ptr);
+            ptr::write_volatile(ptr, value);
+            current_value
+        }
+    }
+
+    fn get_and_add_int(&self, index: i32, delta: i32) -> i32 {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let current_value = ptr::read_volatile(ptr);
+            ptr::write_volatile(ptr, current_value + delta);
+            current_value
+        }
+    }
+
+    fn get_short_volatile(&self, index: i32) -> i16 {
         todo!()
     }
 
-    fn get_and_add_long(&self, index: usize, delta: i64) -> i64 {
+    fn put_short_volatile(&self, index: i32, value: i16) {
         todo!()
     }
 
-    fn get_int_volatile(&self, index: usize) -> i32 {
+    fn get_char_volatile(&self, index: i32) -> char {
         todo!()
     }
 
-    fn put_int_volatile(&self, index: usize, value: i32) {
+    fn put_char_volatile(&self, index: i32, value: char) {
         todo!()
     }
 
-    fn put_int_ordered(&self, index: usize, value: i32) {
+    fn get_byte_volatile(&self, index: i32) -> u8 {
         todo!()
     }
 
-    fn add_int_ordered(&self, index: usize, increment: i32) {
-        todo!()
-    }
-
-    fn compare_and_set_int(&self, index: usize, expected_value: i32, update_value: i32) {
-        todo!()
-    }
-
-    fn get_and_set_int(&self, index: usize, value: i32) -> i32 {
-        todo!()
-    }
-
-    fn get_and_add_int(&self, index: usize, delta: i32) -> i32 {
-        todo!()
-    }
-
-    fn get_short_volatile(&self, index: usize) -> i16 {
-        todo!()
-    }
-
-    fn put_short_volatile(&self, index: usize, value: i16) {
-        todo!()
-    }
-
-    fn get_char_volatile(&self, index: usize) -> char {
-        todo!()
-    }
-
-    fn put_char_volatile(&self, index: usize, value: char) {
-        todo!()
-    }
-
-    fn get_byte_volatile(&self, index: usize) -> u8 {
-        todo!()
-    }
-
-    fn put_byte_ordered(&self, index: usize, value: u8) {
-        todo!()
-    }
-}
-
-impl MutableDirectBuffer for UnsafeBuffer {
-    fn is_expandable(&self) -> bool {
-        false
-    }
-
-    fn set_memory(&self, index: usize, length: usize, value: u8) {
-        todo!()
-    }
-
-    fn put_long_0(&self, index: usize, value: i64, byte_order: &dyn ByteOrder) {
-        todo!()
-    }
-
-    fn put_long(&self, index: usize, value: i64) {
-        todo!()
-    }
-
-    fn put_int_0(&self, index: usize, value: i64, byte_order: &dyn ByteOrder) {
-        todo!()
-    }
-
-    fn put_int(&self, index: usize, value: i64) {
-        todo!()
-    }
-
-    fn put_int_ascii(&self, index: usize, value: i32) -> usize {
-        todo!()
-    }
-
-    fn put_natural_int_ascii(&self, index: usize, value: i32) -> usize {
-        todo!()
-    }
-
-    fn put_natural_padding_int_ascii(&self, index: usize, length: usize, value: i64) {
-        todo!()
-    }
-
-    fn put_natural_int_ascii_from_end(&self, value: i32, end_exclusive: i32) -> usize {
-        todo!()
-    }
-
-    fn put_natural_long_ascii(&self, index: usize, value: i64) -> usize {
-        todo!()
-    }
-
-    fn put_long_ascii(&self, index: usize, value: i64) -> usize {
-        todo!()
-    }
-
-    fn put_double0(&self, index: usize, value: f64, byte_order: &dyn ByteOrder) {
-        todo!()
-    }
-
-    fn put_double(&self, index: usize, value: f64) {
-        todo!()
-    }
-
-    fn put_float0(&self, index: usize, value: f32, byte_order: &dyn ByteOrder) {
-        todo!()
-    }
-
-    fn put_float(&self, index: usize, value: f32) {
-        todo!()
-    }
-
-    fn put_short0(&self, index: usize, value: i16, byte_order: &dyn ByteOrder) {
-        todo!()
-    }
-
-    fn put_short(&self, index: usize, value: i16) {
-        todo!()
-    }
-
-    fn put_char0(&self, index: usize, value: char, byte_order: &dyn ByteOrder) {
-        todo!()
-    }
-
-    fn put_char(&self, index: usize, value: char) {
-        todo!()
-    }
-
-    fn put_byte(&self, index: usize, value: u8) {
-        todo!()
-    }
-
-    fn put_bytes(&self, index: usize, bytes: &[u8]) {
-        todo!()
-    }
-
-    fn put_bytes0(&self, index: usize, byte_order: &dyn ByteOrder, offset: usize, length: usize) {
-        todo!()
-    }
-
-    fn put_bytes2(&self, index: usize, src_buffer: Box<dyn DirectBuffer>, offset: usize, bytes: &[u8]) {
-        todo!()
-    }
-
-    fn put_string_ascii(&self, index: usize, value: &str) -> usize {
-        todo!()
-    }
-
-    fn put_string_ascii0(&self, index: usize, value: &str, byte_order: &dyn ByteOrder) -> usize {
-        todo!()
-    }
-
-    fn put_string_without_length_ascii(&self, index: usize, value: &str) -> usize {
-        todo!()
-    }
-
-    fn put_string_without_length_ascii0(&self, index: usize, value: &str, value_offset: usize, length: usize) -> usize {
-        todo!()
-    }
-
-    fn put_string_utf8(&self, index: usize, value: &str) -> usize {
-        todo!()
-    }
-
-    fn put_string_utf8_0(&self, index: usize, value: &str, byte_order: &dyn ByteOrder) -> usize {
-        todo!()
-    }
-
-    fn put_string_utf8_1(&self, index: usize, value: &str, max_encoded_length: usize) -> usize {
-        todo!()
-    }
-
-    fn put_string_utf8_2(&self, index: usize, value: &str, byte_order: &dyn ByteOrder, max_encoded_length: usize) -> usize {
-        todo!()
-    }
-
-    fn put_string_without_length_utf8(&self, index: usize, value: &str) -> usize {
+    fn put_byte_ordered(&self, index: i32, value: u8) {
         todo!()
     }
 }
 
 impl DirectBuffer for UnsafeBuffer {
-    fn wrap(&self, buffer: &[u8]) -> Result<(), String> {
-        Self.capacity = buffer.len();
-        Self.address_offset = 0; // arr_base_offset
-        Self.wrap_adjustment = 0;
-
-        unsafe {
-            if Self.byte_array.as_ptr() != buffer.as_ptr() {
-                Self.byte_array = *std::slice::from_raw_parts(buffer.as_ptr(), buffer.len());
-            }
-        }
-        Ok(())
-    }
-
-    fn wrap0(&mut self, buffer: &[u8], offset: usize, length: usize) -> Result<(), String> {
-        if SHOULD_BOUNDS_CHECK {
-            self.bounds_check_wrap(offset, length, buffer.len())?;
-        }
-        self.bounds_check_wrap(offset, length, buffer.len()).unwrap();
-        self.capacity = length;
-        self.address_offset = 0 + offset;
-        self.wrap_adjustment = offset;
-
-        unsafe {
-            if self.byte_array.as_ptr() != buffer.as_ptr() {
-                self.byte_array = *std::slice::from_raw_parts(buffer.as_ptr(), buffer.len());
-                // self.byte_array = buffer.to_vec()
-            }
-        }
-        Ok(())
-    }
-
-    fn wrap1(&self, buffer: Box<dyn DirectBuffer>) {
-        Self.capacity = buffer.len();
-        Self.address_offset = 0; // arr_base_offset
-        Self.wrap_adjustment = 0;
-
-        unsafe {
-            if Self.byte_array.as_ptr() != buffer.as_ptr() {
-                Self.byte_array = *std::slice::from_raw_parts(buffer.as_ptr(), buffer.len());
-            }
-        }
-        Ok(())
-    }
-
-    fn wrap2(&mut self, buffer: Box<dyn DirectBuffer>, offset: usize, length: usize) {
-        if SHOULD_BOUNDS_CHECK {
-            self.bounds_check_wrap(offset, length, buffer.len())?;
-        }
-        self.capacity = length;
-        self.address_offset = 0 + offset;
-        self.wrap_adjustment = offset;
-
-        unsafe {
-            if self.byte_array.as_ptr() != buffer.as_ptr() {
-                self.byte_array = *std::slice::from_raw_parts(buffer.as_ptr(), buffer.len());
-                // self.byte_array = buffer.to_vec()
-            }
-        }
-        Ok(())
-    }
-
-    fn wrap3(&mut self, address: usize, length: usize) {
-        self.capacity = length;
-        self.address_offset = address;
-    }
-
-    fn get_long(&self, index: usize) -> i64 {
-        todo!()
-    }
-
-    fn get_long0(&self, index: usize, byte_order: &dyn ByteOrder) -> i64 {
-        todo!()
-    }
-
-    fn get_int(&self, index: usize) -> i32 {
-        todo!()
-    }
-
-    fn get_int0(&self, index: usize, byte_order: &dyn ByteOrder) -> i32 {
-        todo!()
-    }
-
-    fn parse_natural_int_ascii(&self, index: usize, length: usize) -> i32 {
-        todo!()
-    }
-
-    fn parse_natural_long_ascii(&self, index: usize, length: usize) -> i64 {
-        todo!()
-    }
-
-    fn parse_int_ascii(&self, index: usize, length: usize) -> i32 {
-        todo!()
-    }
-
-    fn parse_long_ascii(&self, index: usize, length: usize) -> i64 {
-        todo!()
-    }
-
-    fn get_double(&self, index: usize) -> f64 {
-        todo!()
-    }
-
-    fn get_double0(&self, index: usize, byte_order: &dyn ByteOrder) -> f64 {
-        todo!()
-    }
-
-    fn get_float(&self, index: usize) -> f32 {
-        todo!()
-    }
-
-    fn get_float0(&self, index: usize, byte_order: &dyn ByteOrder) -> f32 {
-        todo!()
-    }
-
-    fn get_short(&self, index: usize) -> i16 {
-        todo!()
-    }
-
-    fn get_short0(&self, index: usize, byte_order: &dyn ByteOrder) -> i16 {
-        todo!()
-    }
-
-    fn get_char(&self, index: usize) -> char {
-        todo!()
-    }
-
-    fn get_char0(&self, index: usize, byte_order: &dyn ByteOrder) -> char {
-        todo!()
-    }
-
-    fn get_byte(&self, index: usize) -> u8 {
-        todo!()
-    }
-
-    fn get_bytes(&self, index: usize, dst: &[u8]) {
-        todo!()
-    }
-
-    fn get_bytes0(&self, index: usize, dst: &[u8], offset: usize, length: usize) {
-        todo!()
-    }
-
-    fn get_bytes1(&self, index: usize, dst_buffer: Box<dyn MutableDirectBuffer>, offset: usize, length: usize) {
-        todo!()
-    }
-
-    fn get_string_ascii(&self, index: usize) -> str {
-        todo!()
-    }
-
-    fn get_string_ascii0(&self, byte_order: dyn ByteOrder) -> str {
-        todo!()
-    }
-
-    fn get_string_without_length_ascii(&self, index: usize, length: usize) -> str {
-        todo!()
-    }
-
-    fn get_string_utf8(&self, index: usize) -> str {
-        todo!()
-    }
-
-    fn get_string_utf8_0(&self, index: usize, length: usize) -> str {
-        todo!()
-    }
-
-    fn get_string_utf8_1(&self, index: usize, byte_order: dyn ByteOrder) -> str {
-        todo!()
-    }
-
-    fn get_string_without_length_utf8(&self, index: usize, length: usize) -> str {
-        todo!()
-    }
-
-    fn bounds_check(&self, index: usize, length: usize) {
-        todo!()
-    }
-
-    fn wrap_adjustment(&self) -> usize {
-        self.wrap_adjustment
-    }
-
-    fn address_offset(&self) -> usize {
+    fn address_offset(&self) -> i32 {
         self.address_offset
     }
 
     fn byte_array(&self) -> &[u8] {
-        &Self.byte_array
+        &self.byte_array
     }
 
-    fn capacity(&self) -> usize {
+    fn capacity(&self) -> i32 {
         self.capacity
     }
 
-    fn check_limit(limit: usize) -> Result<(), String> {
-        if limit > Self.capacity {
-            return Err(format!("limit={} is beyond capacity={}", limit, Self.capacity));
+    fn check_limit(&self, limit: i32) -> Result<(), String> {
+        if limit > self.capacity {
+            return Err(format!("limit={} is beyond capacity={}", limit, self.capacity));
         }
         Ok(())
     }
 
-    // pub unsafe fn put_char_volatile(o: *mut u8, offset: usize, x: char) {
+    fn get_long(&self, index: i32) -> i64 {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    fn get_int(&self, index: i32) -> i32 {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    fn parse_natural_int_ascii(&self, index: i32, length: i32) -> i32 {
+        todo!()
+    }
+
+    fn parse_natural_long_ascii(&self, index: i32, length: i32) -> i64 {
+        todo!()
+    }
+
+    fn parse_int_ascii(&self, index: i32, length: i32) -> i32 {
+        todo!()
+    }
+
+    fn parse_long_ascii(&self, index: i32, length: i32) -> i64 {
+        todo!()
+    }
+
+    fn get_double(&self, index: i32) -> f64 {
+        todo!()
+    }
+
+    fn get_float(&self, index: i32) -> f32 {
+        todo!()
+    }
+
+    fn get_short(&self, index: i32) -> i16 {
+        todo!()
+    }
+
+    fn get_char(&self, index: i32) -> char {
+        todo!()
+    }
+
+    // fn get_string_ascii(&self, index: i32) -> String {
+    //     todo!()
+    // }
+
+    // fn get_string_without_length_ascii(&self, index: i32, length: i32) -> String {
+    //     todo!()
+    // }
+
+    // fn get_string_utf8(&self, index: i32) -> String {
+    //     todo!()
+    // }
+
+    // fn get_string_utf8_0(&self, index: i32, length: i32) -> String {
+    //     todo!()
+    // }
+
+    // fn get_string_without_length_utf8(&self, index: i32, length: i32) -> String {
+    //     todo!()
+    // }
+
+    // fn get_byte(&self, index: i32) -> u8 {
+    //     todo!()
+    // }
+    //
+    // fn get_bytes(&self, index: i32, dst: &[u8]) {
+    //     todo!()
+    // }
+    //
+    // fn get_bytes0(&self, index: i32, dst: &[u8], offset: i32, length: i32) {
+    //     todo!()
+    // }
+    //
+    // fn get_bytes1(&self, index: i32, dst_buffer: &UnsafeBuffer, offset: i32, length: i32) {
+    //     todo!()
+    // }
+    //
+    // fn bounds_check(&self, index: i32, length: i32) {
+    //     todo!()
+    // }
+
+    fn wrap_adjustment(&self) -> i32 {
+        self.wrap_adjustment
+    }
+
+    // pub unsafe fn put_char_volatile(o: *mut u8, offset: i32, x: char) {
     //     let x_as_u16 = x as u16;
     //     let addr = o.add(offset) as *mut u16;
     //     ptr::write_volatile(addr, x_as_u16);
     //     compiler_fence(Ordering::SeqCst);
     // }
+
+    fn is_expandable(&self) -> bool {
+        false
+    }
+
+    fn set_memory(&self, index: i32, length: i32, value: u8) {
+        todo!()
+    }
+
+    fn put_long(&mut self, index: i32, value: i64) {
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i64;
+            ptr::write_unaligned(ptr, value);
+        }
+    }
+
+    fn put_int(&mut self, index: i32, value: i32) {
+        unsafe {
+            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            ptr::write_unaligned(ptr, value);
+        }
+    }
+
+    fn put_int_ascii(&self, index: i32, value: i32) -> i32 {
+        todo!()
+    }
+
+    fn put_natural_int_ascii(&self, index: i32, value: i32) -> i32 {
+        todo!()
+    }
+
+    fn put_natural_padding_int_ascii(&self, index: i32, length: i32, value: i64) {
+        todo!()
+    }
+
+    fn put_natural_int_ascii_from_end(&self, value: i32, end_exclusive: i32) -> i32 {
+        todo!()
+    }
+
+    fn put_natural_long_ascii(&self, index: i32, value: i64) -> i32 {
+        todo!()
+    }
+
+    fn put_long_ascii(&self, index: i32, value: i64) -> i32 {
+        todo!()
+    }
+
+    fn put_double(&self, index: i32, value: f64) {
+        todo!()
+    }
+
+    fn put_float(&self, index: i32, value: f32) {
+        todo!()
+    }
+
+    fn put_short(&self, index: i32, value: i16) {
+        todo!()
+    }
+
+    fn put_char(&self, index: i32, value: char) {
+        todo!()
+    }
+
+    fn put_byte(&self, index: i32, value: u8) {
+        todo!()
+    }
+
+    fn put_bytes(&self, index: i32, bytes: &UnsafeBuffer) {
+        todo!()
+    }
+
+    fn put_bytes2(&self, index: i32, src_buffer: &UnsafeBuffer, offset: i32, length: i32) {
+        todo!()
+    }
+
+    fn put_string_ascii(&self, index: i32, value: &str) -> i32 {
+        todo!()
+    }
+
+    fn put_string_without_length_ascii(&self, index: i32, value: &str) -> i32 {
+        todo!()
+    }
+
+    fn put_string_without_length_ascii0(&self, index: i32, value: &str, value_offset: i32, length: i32) -> i32 {
+        todo!()
+    }
+
+    fn put_string_utf8(&self, index: i32, value: &str) -> i32 {
+        todo!()
+    }
+
+    fn put_string_utf8_1(&self, index: i32, value: &str, max_encoded_length: i32) -> i32 {
+        todo!()
+    }
+
+    fn put_string_without_length_utf8(&self, index: i32, value: &str) -> i32 {
+        todo!()
+    }
 }

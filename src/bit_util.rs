@@ -1,15 +1,15 @@
 use rand::Rng;
 use lazy_static::lazy_static;
 
-pub const SIZE_OF_BYTE: usize = 1;
-pub const SIZE_OF_BOOLEAN: usize = 1;
-pub const SIZE_OF_CHAR: usize = 2;
-pub const SIZE_OF_SHORT: usize = 2;
-pub const SIZE_OF_INT: usize = 4;
-pub const SIZE_OF_FLOAT: usize = 4;
-pub const SIZE_OF_LONG: usize = 8;
-pub const SIZE_OF_DOUBLE: usize = 8;
-pub const CACHE_LINE_LENGTH: usize = 64;
+pub const SIZE_OF_BYTE: i32 = 1;
+pub const SIZE_OF_BOOLEAN: i32 = 1;
+pub const SIZE_OF_CHAR: i32 = 2;
+pub const SIZE_OF_SHORT: i32 = 2;
+pub const SIZE_OF_INT: i32 = 4;
+pub const SIZE_OF_FLOAT: i32 = 4;
+pub const SIZE_OF_LONG: i32 = 8;
+pub const SIZE_OF_DOUBLE: i32 = 8;
+pub const CACHE_LINE_LENGTH: i32 = 64;
 
 pub const HEX_DIGIT_TABLE: [u8; 16] = [
     b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7',
@@ -40,7 +40,7 @@ pub fn find_next_positive_power_of_two_i64(value: i64) -> i64 {
     1 << (size_of::<i64>() * 8 - value.leading_zeros() as usize - 1)
 }
 
-pub fn align(value: usize, alignment: usize) -> usize {
+pub fn align(value: i32, alignment: i32) -> i32 {
     (value + (alignment - 1)) & !(alignment - 1)
 }
 
@@ -63,20 +63,20 @@ pub fn to_hex_byte_array0(buffer: &[u8], offset: usize, length: usize) -> Vec<u8
     for i in (0..(length << 1)).step_by(2) {
         let b = buffer[offset + (i >> 1)];
 
-        output_buffer[i] = HEX_DIGIT_TABLE[(b >> 4) as usize & 0x0F];
+        output_buffer[i] = HEX_DIGIT_TABLE[((b >> 4) & 0x0F) as usize];
         output_buffer[i + 1] = HEX_DIGIT_TABLE[(b & 0x0F) as usize];
     }
     output_buffer
 }
 
-pub fn to_hex_byte_array1(str: &str, offset: usize, length: usize) -> Vec<u8> {
+pub fn to_hex_byte_array1(str: &str, offset: usize, length: i32) -> Vec<u8> {
     let mut output_buffer = vec![0u8; str.len() << 1];
 
-    for i in 0..length {
-        let b = str[offset + i..offset + i + 1].as_bytes()[0];
+    for i in 0..length as usize {
+        let b = str[(offset + i)..(offset + i + 1)].as_bytes()[0] as usize;
 
-        output_buffer[i] = HEX_DIGIT_TABLE[(b >> 4) as usize];
-        output_buffer[i + 1] = HEX_DIGIT_TABLE[(b & 0x0F) as usize];
+        output_buffer[i] = HEX_DIGIT_TABLE[b >> 4];
+        output_buffer[i + 1] = HEX_DIGIT_TABLE[b & 0x0F];
     }
 
     output_buffer
@@ -130,7 +130,7 @@ pub fn next(current: i32, max: i32) -> i32 {
 
 pub fn prev(current: i32, max: i32) -> i32 {
     if current == 0 {
-        max - 1;
+        return max - 1;
     }
     current - 1
 }
