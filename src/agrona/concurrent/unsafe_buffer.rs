@@ -1,8 +1,9 @@
+#![feature(core_intrinsics)]
+
 use crate::agrona::concurrent::atomic_buffer::AtomicBuffer;
 use crate::agrona::concurrent::ringbuffer::ring_buffer_descriptor::TRAILER_LENGTH;
 use crate::agrona::direct_buffer::DirectBuffer;
 use std::ptr;
-use std::sync::atomic::{fence, Ordering};
 
 const SHOULD_BOUNDS_CHECK: bool = false;
 pub struct UnsafeBuffer {
@@ -13,14 +14,29 @@ pub struct UnsafeBuffer {
     capacity: i32,
 }
 
-unsafe impl Sync for UnsafeBuffer {}
+// #[inline]
+// #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
+// unsafe fn atomic_load<T: Copy>(dst: *const T, order: Ordering) -> T {
+//     // SAFETY: the caller must uphold the safety contract for `atomic_load`.
+//     unsafe {
+//         match order {
+//             Relaxed => intrinsics::atomic_load_relaxed(dst),
+//             Acquire => intrinsics::atomic_load_acquire(dst),
+//             SeqCst => intrinsics::atomic_load_seqcst(dst),
+//             Release => panic!("there is no such thing as a release load"),
+//             AcqRel => panic!("there is no such thing as an acquire-release load"),
+//         }
+//     }
+// }
 
 impl UnsafeBuffer {
     pub fn new(capacity: usize) -> Self {
         let actual_capacity = capacity + TRAILER_LENGTH as usize;
+        let mut tmp = vec![0u8; actual_capacity].into_boxed_slice();
+        let tmp2 = tmp.as_mut_ptr();
         UnsafeBuffer {
             wrap_adjustment: 0,
-            byte_array: vec![0u8; actual_capacity].into_boxed_slice(),
+            byte_array: tmp,
             address_offset: 0,
             capacity: actual_capacity as i32,
         }
@@ -66,6 +82,7 @@ impl AtomicBuffer for UnsafeBuffer {
     fn get_long_volatile(&self, index: i32) -> i64 {
         unsafe {
             let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
+            // atomic_load(ptr, SeqCst);
             ptr::read_volatile(ptr)
         }
     }
@@ -119,46 +136,19 @@ impl AtomicBuffer for UnsafeBuffer {
     }
 
     fn add_int_ordered(&mut self, index: i32, increment: i32) {
-        unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            let current_value = ptr::read_volatile(ptr);
-            ptr::write_unaligned(ptr, current_value + increment);
-            fence(Ordering::Release);
-        }
+        todo!()
     }
 
     fn compare_and_set_int(&mut self, index: i32, expected_value: i32, update_value: i32) -> Result<bool, String> {
-        if SHOULD_BOUNDS_CHECK {
-            self.bounds_check0(index, expected_value)?
-        }
-
-        unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            let current_value = ptr::read_volatile(ptr);
-            if current_value == expected_value {
-                ptr::write_volatile(ptr, update_value);
-                return Ok(true)
-            }
-            Ok(false)
-        }
+        todo!()
     }
 
     fn get_and_set_int(&self, index: i32, value: i32) -> i32 {
-        unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            let current_value = ptr::read_volatile(ptr);
-            ptr::write_volatile(ptr, value);
-            current_value
-        }
+        todo!()
     }
 
     fn get_and_add_int(&self, index: i32, delta: i32) -> i32 {
-        unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            let current_value = ptr::read_volatile(ptr);
-            ptr::write_volatile(ptr, current_value + delta);
-            current_value
-        }
+        todo!()
     }
 
     fn get_short_volatile(&self, index: i32) -> i16 {

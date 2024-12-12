@@ -8,7 +8,7 @@ pub const STRICT_ALIGNMENT_CHECKS_PROP_NAME: &str = "agrona.strict.alignment.che
 pub trait AtomicBuffer {
     fn verify_alignment(&self);
     fn get_long_volatile(&self, index: i32) -> i64;
-    fn put_long_volatile(&self, index: i32, value: i64);
+    fn put_long_volatile(&mut self, index: i32, value: i64);
     fn put_long_ordered(&mut self, index: i32, value: i64);
     fn add_long_ordered(&self, index: i32, increment: i64);
     fn compare_and_set_long(&self, index: i32, expected_value: i64, update_value: i64);

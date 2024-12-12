@@ -23,7 +23,9 @@ pub struct OneToOneRingBuffer {
     buffer: UnsafeCell<UnsafeBuffer>
 }
 
-unsafe impl Sync for OneToOneRingBuffer{}
+unsafe impl Send for OneToOneRingBuffer {}
+
+unsafe impl Sync for OneToOneRingBuffer {}
 
 impl OneToOneRingBuffer {
     pub fn new(buffer: UnsafeBuffer) -> Self {
@@ -62,7 +64,7 @@ impl OneToOneRingBuffer {
     }
 
     fn claim_capacity(&self, record_length: i32) -> i32 {
-        let aligned_record_length = align(record_length, HEADER_LENGTH);
+        let aligned_record_length = align(record_length, ALIGNMENT);
         let required_capacity = aligned_record_length + HEADER_LENGTH;
         let mask = self.capacity - 1;
         let buffer = unsafe {
@@ -110,6 +112,7 @@ impl OneToOneRingBuffer {
         }
 
         buffer.put_long_ordered(self.tail_position_index, next_tail);
+        // println!("here2: {}, {}", next_tail, buffer.get_long(self.tail_position_index));
 
         if padding != 0 {
             buffer.put_long(0, 0);
@@ -122,6 +125,7 @@ impl OneToOneRingBuffer {
 
         if write_index != INSUFFICIENT_CAPACITY {
             buffer.put_long(write_index + aligned_record_length, 0); // pre-zero next message header
+            // println!("here3: {}, {}", 0, buffer.get_long(write_index + aligned_record_length));
         }
 
         record_index
@@ -138,7 +142,7 @@ impl OneToOneRingBuffer {
     fn verify_claimed_space_not_released(&self, buffer: &UnsafeBuffer, record_index: i32) -> i32 {
         let record_length = buffer.get_int(length_offset(record_index));
         if record_length < 0 {
-            return record_index;
+            return record_length;
         }
         if PADDING_MSG_TYPE_ID == buffer.get_int(type_offset(record_index)) {
             panic!("claimed space previously aborted");
@@ -172,12 +176,15 @@ impl RingBuffer for OneToOneRingBuffer {
 
         buffer.put_bytes2(encoded_msg_offset(record_index), src_buffer, offset, length);
         buffer.put_int(type_offset(record_index), msg_type_id);
-        buffer.put_int_ordered(length_offset(record_index), 0);
+        buffer.put_int_ordered(length_offset(record_index), record_length);
 
         true
     }
 
     fn try_claim(&self, msg_type_id: i32, length: i32) -> i32 {
+        let buffer = unsafe {
+            &mut *self.buffer.get()
+        };
         check_type_id(msg_type_id);
         Self::check_msg_length(self, length);
 
@@ -188,13 +195,14 @@ impl RingBuffer for OneToOneRingBuffer {
             return record_index
         }
 
-        let buffer = unsafe {
-            &mut *self.buffer.get()
-        };
 
-        buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
+        // buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
+        buffer.put_int(length_offset(record_index), -1 * record_length);
+        // println!("here: {}, {}", -1 * record_length, buffer.get_int(length_offset(record_index)));
         fence(Ordering::Release);
+        // buffer.put_int(type_offset(record_index), msg_type_id);
         buffer.put_int(type_offset(record_index), msg_type_id);
+        // println!("here1: {}, {}", msg_type_id, buffer.get_int(type_offset(record_index)));
 
         encoded_msg_offset(record_index)
     }
@@ -205,7 +213,9 @@ impl RingBuffer for OneToOneRingBuffer {
         };
         let record_index = Self::compute_record_index(&self, index);
         let record_length = Self::verify_claimed_space_not_released(&self, &buffer, record_index);
-        buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
+        // buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
+        buffer.put_int_volatile(length_offset(record_index), -1 * record_length); // wher we write
+        // println!("here4: {}, {}", -1 * record_length, buffer.get_int(length_offset(record_index)));
     }
 
     fn abort(&self, index: i32) {
@@ -220,18 +230,19 @@ impl RingBuffer for OneToOneRingBuffer {
     }
 
     // this means dynamically dispatched trait object
-    fn read<F>(&self, func: F) -> i32 where F: Fn(i32, &UnsafeBuffer, i32, i32) {
+    fn read<F>(&self, func: F) -> i32 where F: FnMut(i32, &UnsafeBuffer, i32, i32) {
         Self::read0(self, func, i32::MAX)
     }
 
-    fn read0<F>(&self, func: F, message_count_limit: i32) -> i32 where F: Fn(i32, &UnsafeBuffer, i32, i32) {
-        let mut messages_read = 0;
+    fn read0<F>(&self, mut func: F, message_count_limit: i32) -> i32 where F: FnMut(i32, &UnsafeBuffer, i32, i32) {
         let buffer = unsafe {
             &mut *self.buffer.get()
         };
+        let mut messages_read = 0;
 
         let head_position_index = self.head_position_index;
-        let head = buffer.get_long(head_position_index);
+        // let head = buffer.get_long(head_position_index);
+        let head = buffer.get_long_volatile(head_position_index);
 
         let mut bytes_read = 0;
 
@@ -241,14 +252,15 @@ impl RingBuffer for OneToOneRingBuffer {
 
         while (bytes_read < contiguous_block_length) && (messages_read < message_count_limit) {
             let record_index = head_index + bytes_read;
-            let record_length = buffer.get_int_volatile(length_offset(record_index));
-            if record_length < 0 {
+            let record_length = buffer.get_int(length_offset(record_index));
+            if record_length <= 0 {
                 break;
             }
 
             bytes_read += align(record_length, ALIGNMENT);
 
-            let message_type_id = buffer.get_int(type_offset(record_index));
+            // let message_type_id = buffer.get_int(type_offset(record_index));
+            let message_type_id = buffer.get_int_volatile(type_offset(record_index));
             if message_type_id == PADDING_MSG_TYPE_ID {
                 continue;
             }
@@ -257,7 +269,8 @@ impl RingBuffer for OneToOneRingBuffer {
             messages_read += 1;
         }
         if bytes_read > 0 {
-            buffer.put_long_ordered(head_position_index, head + bytes_read as i64);
+            // buffer.put_long_ordered(head_position_index, head + bytes_read as i64);
+            buffer.put_long_volatile(head_position_index, head + bytes_read as i64);
         }
         messages_read
     }

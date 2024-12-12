@@ -1,8 +1,14 @@
+use atomicring::AtomicRingBuffer;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use hdrhistogram::Histogram;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
-use atomicring::AtomicRingBuffer;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use Ringo::agrona::concurrent::ringbuffer::one_to_one_ring_buffer::OneToOneRingBuffer;
+use Ringo::agrona::concurrent::ringbuffer::ring_buffer::RingBuffer;
+use Ringo::agrona::concurrent::unsafe_buffer::UnsafeBuffer;
+use Ringo::agrona::direct_buffer::DirectBuffer;
+use Ringo::bit_util::SIZE_OF_LONG;
 
 const MAX_IN_FLIGHTS: u32 = 1000;
 
@@ -22,14 +28,14 @@ impl MyClass {
     }
 }
 
-fn new<T>(cap: Option<i32>) -> (Sender<T>, Receiver<T>) {
+fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
     match cap {
         None => unbounded(),
         Some(cap) => bounded(cap),
     }
 }
 
-fn spsc_chan(cap: Option<i32>) {
+fn spsc_chan(cap: Option<usize>) {
     let (tx1, rx1) : (Sender<MyClass>, Receiver<MyClass>) = new(cap);
     let (tx2, rx2) : (Sender<MyClass>, Receiver<MyClass>) = new(cap);
     // let (tx1, rx1) : (Sender<Box<MyClass>>, Receiver<Box<MyClass>>) = new(cap);
@@ -58,7 +64,7 @@ fn spsc_chan(cap: Option<i32>) {
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            if set.len() < MAX_IN_FLIGHTS as i32 {
+            if set.len() < MAX_IN_FLIGHTS as usize {
                 let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as i64;
                 let msg = MyClass::new(seq, ts);
                 // let msg = Arc::new(MyClass::new(seq, ts));
@@ -86,7 +92,7 @@ fn spsc_chan(cap: Option<i32>) {
     }).unwrap();
 }
 
-fn spsc(cap: i32) {
+fn spsc(cap: usize) {
     let q1 : AtomicRingBuffer<MyClass> = AtomicRingBuffer::with_capacity(cap);
     let q2 : AtomicRingBuffer<MyClass> = AtomicRingBuffer::with_capacity(cap);
 
@@ -113,7 +119,7 @@ fn spsc(cap: i32) {
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            if set.len() < MAX_IN_FLIGHTS as i32 {
+            if set.len() < MAX_IN_FLIGHTS as usize {
                 let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as i64;
                 let msg = MyClass::new(seq, ts);
                 match q1.try_push(msg) {
@@ -142,6 +148,81 @@ fn spsc(cap: i32) {
     }).unwrap();
 }
 
+fn write(seq: i64, now_ns: i64, buffer: &OneToOneRingBuffer) -> bool {
+    let idx = buffer.try_claim(1, 2 * SIZE_OF_LONG);
+    if idx > 0 {
+        let buf = buffer.buffer();
+        let mut rb2_offset = idx;
+        buf.put_long(rb2_offset, seq);
+        rb2_offset += SIZE_OF_LONG;
+        buf.put_long(rb2_offset, now_ns);
+        buffer.commit(idx);
+        return true;
+    }
+    false
+}
+
+fn spsc_own(cap: usize) {
+    let buf1 = UnsafeBuffer::new(1024);
+    let buf2 = UnsafeBuffer::new(1024);
+    let rb1 = OneToOneRingBuffer::new(buf1);
+    let rb2 = OneToOneRingBuffer::new(buf2);
+
+    // let rb1 = Arc::new(OneToOneRingBuffer::new(buf1));
+    // let rb2 = Arc::new(OneToOneRingBuffer::new(buf2));
+    // let rb1_cloned = Arc::clone(&rb1);
+
+    crossbeam::scope(|scope| {
+        scope.spawn(|_| {
+            let closure = |msg_type: i32, buffer: &UnsafeBuffer, index: i32, length: i32| {
+                let seq = buffer.get_long(index);
+                let rb1_offset = index + SIZE_OF_LONG;
+                let ts = buffer.get_long(rb1_offset);
+                loop {
+                    if write(seq, ts, &rb2) {
+                        break;
+                    }
+                }
+            };
+            loop {
+                // thread::sleep(Duration::from_millis(550));
+                rb1.read0(closure, 500);
+            }
+        });
+
+        let mut set : HashSet<i64> = HashSet::new();
+        let mut seq : i64 = 1;
+        let mut histogram = Histogram::<u64>::new(3).unwrap();
+        let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+
+        loop {
+            thread::sleep(Duration::from_millis(50));
+            if set.len() < MAX_IN_FLIGHTS as usize {
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as i64;
+                if write(seq, ts, &rb1) {
+                    set.insert(seq);
+                    println!("Sent: {}", seq);
+                    seq += 1;
+                }
+            }
+            let closure = |msg_type: i32, buffer: &UnsafeBuffer, index: i32, length: i32| {
+                let seq = buffer.get_long(index);
+                let offset = index + SIZE_OF_LONG;
+                let ts = buffer.get_long(offset); //0
+                let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as i64 - ts;
+                histogram.record(elapsed as u64).unwrap();
+                set.remove(&seq);
+                println!("Received: {}", seq);
+            };
+            rb2.read0(closure, 500);
+
+            ori_ms = record_time(&mut histogram, ori_ms);
+        }
+    }).unwrap();
+}
+
 fn record_time(histogram: &mut Histogram<u64>, mut ori_ms: u128) -> u128 {
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     if now_ms - ori_ms > 5_000 {
@@ -164,5 +245,6 @@ fn record_time(histogram: &mut Histogram<u64>, mut ori_ms: u128) -> u128 {
 async fn main() {
     // spsc_chan(Some(5_000));
     // spsc_chan(Some(5_000));
-    spsc(5_000);
+    // spsc(5_000);
+    spsc_own(1024);
 }

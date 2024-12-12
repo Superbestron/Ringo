@@ -10,6 +10,7 @@ hdrhistogram = "7.0"
 crossbeam-channel = "0.5.13"
 crossbeam = "0.8.4"
 atomicring = "1.2.9"
+Ringo = { path = ".." }
 
 [[bin]]
 name = "spsc"

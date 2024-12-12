@@ -1,7 +1,7 @@
 use crate::agrona::concurrent::controlled_message_handler::Action;
 use crate::agrona::concurrent::unsafe_buffer::UnsafeBuffer;
 
-pub const PADDING_MSG_TYPE_ID: i32 = 1;
+pub const PADDING_MSG_TYPE_ID: i32 = -1;
 pub const INSUFFICIENT_CAPACITY: i32 = -2;
 
 pub trait RingBuffer {
@@ -24,9 +24,9 @@ pub trait RingBuffer {
 
     fn abort(&self, index: i32);
 
-    fn read<F>(&self, func: F) -> i32 where F: Fn(i32, &UnsafeBuffer, i32, i32);
+    fn read<F>(&self, func: F) -> i32 where F: FnMut(i32, &UnsafeBuffer, i32, i32);
 
-    fn read0<F>(&self, func: F, message_count_limit: i32) -> i32 where F: Fn(i32, &UnsafeBuffer, i32, i32);
+    fn read0<F>(&self, func: F, message_count_limit: i32) -> i32 where F: FnMut(i32, &UnsafeBuffer, i32, i32);
 
     fn controlled_read<F>(&self, func: F) -> i32 where F: Fn(i32, &UnsafeBuffer, i32, i32) -> Action;
 
