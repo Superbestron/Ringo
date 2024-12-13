@@ -240,8 +240,7 @@ impl RingBuffer for OneToOneRingBuffer {
         let mut messages_read = 0;
 
         let head_position_index = self.head_position_index;
-        // let head = buffer.get_long(head_position_index);
-        let head = buffer.get_long_volatile(head_position_index);
+        let head = buffer.get_long(head_position_index);
 
         let mut bytes_read = 0;
 
@@ -258,8 +257,7 @@ impl RingBuffer for OneToOneRingBuffer {
 
             bytes_read += align(record_length, ALIGNMENT);
 
-            // let message_type_id = buffer.get_int(type_offset(record_index));
-            let message_type_id = buffer.get_int_volatile(type_offset(record_index));
+            let message_type_id = buffer.get_int(type_offset(record_index));
             if message_type_id == PADDING_MSG_TYPE_ID {
                 continue;
             }
