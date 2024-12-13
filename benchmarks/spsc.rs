@@ -150,6 +150,7 @@ fn spsc(cap: usize) {
 
 fn write(seq: i64, now_ns: i64, buffer: &OneToOneRingBuffer) -> bool {
     let idx = buffer.try_claim(1, 2 * SIZE_OF_LONG);
+    // println!("idx: {:?}", idx);
     if idx > 0 {
         let buf = buffer.buffer();
         let mut rb2_offset = idx;
@@ -163,8 +164,8 @@ fn write(seq: i64, now_ns: i64, buffer: &OneToOneRingBuffer) -> bool {
 }
 
 fn spsc_own(cap: usize) {
-    let buf1 = UnsafeBuffer::new(1024);
-    let buf2 = UnsafeBuffer::new(1024);
+    let buf1 = UnsafeBuffer::new(cap);
+    let buf2 = UnsafeBuffer::new(cap);
     let rb1 = OneToOneRingBuffer::new(buf1);
     let rb2 = OneToOneRingBuffer::new(buf2);
 
@@ -196,25 +197,25 @@ fn spsc_own(cap: usize) {
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            thread::sleep(Duration::from_millis(50));
+            // thread::sleep(Duration::from_micros(100000));
             if set.len() < MAX_IN_FLIGHTS as usize {
                 let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as i64;
                 if write(seq, ts, &rb1) {
                     set.insert(seq);
-                    println!("Sent: {}", seq);
+                    // println!("Sent: {}", seq);
                     seq += 1;
                 }
             }
             let closure = |msg_type: i32, buffer: &UnsafeBuffer, index: i32, length: i32| {
                 let seq = buffer.get_long(index);
                 let offset = index + SIZE_OF_LONG;
-                let ts = buffer.get_long(offset); //0
+                let ts = buffer.get_long(offset);
                 let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_nanos() as i64 - ts;
                 histogram.record(elapsed as u64).unwrap();
                 set.remove(&seq);
-                println!("Received: {}", seq);
+                // println!("Received: {}", seq);
             };
             rb2.read0(closure, 500);
 
@@ -243,8 +244,8 @@ fn record_time(histogram: &mut Histogram<u64>, mut ori_ms: u128) -> u128 {
 
 #[tokio::main(flavor = "current_thread")] // single threaded async runtime
 async fn main() {
-    // spsc_chan(Some(5_000));
-    // spsc_chan(Some(5_000));
-    // spsc(5_000);
-    spsc_own(1024);
+    // spsc_chan(Some(1 << 20));
+    // spsc_chan(None);
+    // spsc(1 << 20);
+    spsc_own(1 << 20);
 }

@@ -1,9 +1,9 @@
-#![feature(core_intrinsics)]
-
 use crate::agrona::concurrent::atomic_buffer::AtomicBuffer;
 use crate::agrona::concurrent::ringbuffer::ring_buffer_descriptor::TRAILER_LENGTH;
 use crate::agrona::direct_buffer::DirectBuffer;
-use std::ptr;
+use std::{intrinsics, ptr};
+use std::sync::atomic::{fence, Ordering};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 
 const SHOULD_BOUNDS_CHECK: bool = false;
 pub struct UnsafeBuffer {
@@ -14,26 +14,42 @@ pub struct UnsafeBuffer {
     capacity: i32,
 }
 
-// #[inline]
-// #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
-// unsafe fn atomic_load<T: Copy>(dst: *const T, order: Ordering) -> T {
-//     // SAFETY: the caller must uphold the safety contract for `atomic_load`.
-//     unsafe {
-//         match order {
-//             Relaxed => intrinsics::atomic_load_relaxed(dst),
-//             Acquire => intrinsics::atomic_load_acquire(dst),
-//             SeqCst => intrinsics::atomic_load_seqcst(dst),
-//             Release => panic!("there is no such thing as a release load"),
-//             AcqRel => panic!("there is no such thing as an acquire-release load"),
-//         }
-//     }
-// }
+#[inline]
+#[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
+unsafe fn atomic_load<T: Copy>(dst: *const T, order: Ordering) -> T {
+    // SAFETY: the caller must uphold the safety contract for `atomic_load`.
+    unsafe {
+        match order {
+            Ordering::Relaxed => intrinsics::atomic_load_relaxed(dst),
+            Ordering::Acquire => intrinsics::atomic_load_acquire(dst),
+            Ordering::SeqCst => intrinsics::atomic_load_seqcst(dst),
+            Ordering::Release => panic!("there is no such thing as a release load"),
+            Ordering::AcqRel => panic!("there is no such thing as an acquire-release load"),
+            _ => panic!("wtf"),
+        }
+    }
+}
+
+#[inline]
+#[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
+unsafe fn atomic_store<T: Copy>(dst: *mut T, val: T, order: Ordering) {
+    // SAFETY: the caller must uphold the safety contract for `atomic_store`.
+    unsafe {
+        match order {
+            Relaxed => intrinsics::atomic_store_relaxed(dst, val),
+            Release => intrinsics::atomic_store_release(dst, val),
+            SeqCst => intrinsics::atomic_store_seqcst(dst, val),
+            Acquire => panic!("there is no such thing as an acquire store"),
+            AcqRel => panic!("there is no such thing as an acquire-release store"),
+            _ => panic!("wtf"),
+        }
+    }
+}
 
 impl UnsafeBuffer {
     pub fn new(capacity: usize) -> Self {
         let actual_capacity = capacity + TRAILER_LENGTH as usize;
         let mut tmp = vec![0u8; actual_capacity].into_boxed_slice();
-        let tmp2 = tmp.as_mut_ptr();
         UnsafeBuffer {
             wrap_adjustment: 0,
             byte_array: tmp,
@@ -82,19 +98,23 @@ impl AtomicBuffer for UnsafeBuffer {
     fn get_long_volatile(&self, index: i32) -> i64 {
         unsafe {
             let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
-            // atomic_load(ptr, SeqCst);
-            ptr::read_volatile(ptr)
+            atomic_load(ptr, SeqCst)
+            // ptr::read_volatile(ptr)
         }
     }
 
-    fn put_long_volatile(&self, index: i32, value: i64) {
-        todo!()
+    fn put_long_volatile(&mut self, index: i32, value: i64) {
+        unsafe {
+            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *mut i64;
+            atomic_store(ptr, value, SeqCst);
+        }
     }
 
     fn put_long_ordered(&mut self, index: i32, value: i64) {
         unsafe {
             let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i64;
-            ptr::write_unaligned(ptr, value);
+            // ptr::write_unaligned(ptr, value);
+            atomic_store(ptr, value, Release);
         }
     }
 
@@ -117,21 +137,24 @@ impl AtomicBuffer for UnsafeBuffer {
     fn get_int_volatile(&self, index: i32) -> i32 {
         unsafe {
             let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i32;
-            ptr::read_volatile(ptr)
+            // ptr::read_volatile(ptr)
+            atomic_load(ptr, SeqCst)
         }
     }
 
     fn put_int_volatile(&mut self, index: i32, value: i32) {
         unsafe {
             let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            ptr::write_volatile(ptr, value);
+            // ptr::write_volatile(ptr, value)
+            atomic_store(ptr, value, SeqCst)
         }
     }
 
     fn put_int_ordered(&mut self, index: i32, value: i32) {
         unsafe {
             let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            ptr::write_unaligned(ptr, value);
+            // ptr::write_unaligned(ptr, value)
+            atomic_store(ptr, value, Release);
         }
     }
 
@@ -199,14 +222,16 @@ impl DirectBuffer for UnsafeBuffer {
     fn get_long(&self, index: i32) -> i64 {
         unsafe {
             let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
-            ptr::read_unaligned(ptr)
+            // ptr::read_unaligned(ptr)
+            atomic_load(ptr, Relaxed)
         }
     }
 
     fn get_int(&self, index: i32) -> i32 {
         unsafe {
             let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i32;
-            ptr::read_unaligned(ptr)
+            // ptr::read_unaligned(ptr)
+            atomic_load(ptr, Relaxed)
         }
     }
 
@@ -304,14 +329,16 @@ impl DirectBuffer for UnsafeBuffer {
     fn put_long(&mut self, index: i32, value: i64) {
         unsafe {
             let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i64;
-            ptr::write_unaligned(ptr, value);
+            // ptr::write_unaligned(ptr, value)
+            atomic_store(ptr, value, Relaxed);
         }
     }
 
     fn put_int(&mut self, index: i32, value: i32) {
         unsafe {
             let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
-            ptr::write_unaligned(ptr, value);
+            // ptr::write_unaligned(ptr, value)
+            atomic_store(ptr, value, Relaxed)
         }
     }
 

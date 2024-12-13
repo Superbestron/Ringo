@@ -1,4 +1,4 @@
-use agrona::concurrent::ringbuffer::one_to_one_ring_buffer::OneToOneRingBuffer;
+#![feature(core_intrinsics)]
 
 // write src code here
 mod agrona;

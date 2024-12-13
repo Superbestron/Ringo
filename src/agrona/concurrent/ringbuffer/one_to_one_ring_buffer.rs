@@ -87,8 +87,10 @@ impl OneToOneRingBuffer {
         let to_buffer_end_length = self.capacity - record_index;
         let mut write_index = record_index;
         let mut next_tail = tail + aligned_record_length as i64;
+        // println!("tail, arl, next_tail: {} {} {}", tail, aligned_record_length, next_tail);
 
         if aligned_record_length == to_buffer_end_length { // message fits within the end of the buffer
+            // println!("here6: {}", next_tail);
             buffer.put_long_ordered(self.tail_position_index, next_tail);
             buffer.put_long(0, 0); // pre-zero next message header
             return record_index;
@@ -117,7 +119,7 @@ impl OneToOneRingBuffer {
         if padding != 0 {
             buffer.put_long(0, 0);
             buffer.put_int_ordered(length_offset(record_index), -padding);
-            fence(Ordering::Release);
+            // fence(Ordering::Release);
 
             buffer.put_int(type_offset(record_index), PADDING_MSG_TYPE_ID);
             buffer.put_int_ordered(length_offset(record_index), padding);
@@ -128,7 +130,7 @@ impl OneToOneRingBuffer {
             // println!("here3: {}, {}", 0, buffer.get_long(write_index + aligned_record_length));
         }
 
-        record_index
+        write_index
     }
 
     fn compute_record_index(&self, index: i32) -> i32 {
@@ -172,7 +174,7 @@ impl RingBuffer for OneToOneRingBuffer {
         }
 
         buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
-        fence(Ordering::Release);
+        // fence(Ordering::Release);
 
         buffer.put_bytes2(encoded_msg_offset(record_index), src_buffer, offset, length);
         buffer.put_int(type_offset(record_index), msg_type_id);
@@ -196,11 +198,9 @@ impl RingBuffer for OneToOneRingBuffer {
         }
 
 
-        // buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
-        buffer.put_int(length_offset(record_index), -1 * record_length);
+        buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
         // println!("here: {}, {}", -1 * record_length, buffer.get_int(length_offset(record_index)));
-        fence(Ordering::Release);
-        // buffer.put_int(type_offset(record_index), msg_type_id);
+        // fence(Ordering::Release);
         buffer.put_int(type_offset(record_index), msg_type_id);
         // println!("here1: {}, {}", msg_type_id, buffer.get_int(type_offset(record_index)));
 
@@ -213,8 +213,7 @@ impl RingBuffer for OneToOneRingBuffer {
         };
         let record_index = Self::compute_record_index(&self, index);
         let record_length = Self::verify_claimed_space_not_released(&self, &buffer, record_index);
-        // buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
-        buffer.put_int_volatile(length_offset(record_index), -1 * record_length); // wher we write
+        buffer.put_int_ordered(length_offset(record_index), -1 * record_length);
         // println!("here4: {}, {}", -1 * record_length, buffer.get_int(length_offset(record_index)));
     }
 
@@ -269,8 +268,7 @@ impl RingBuffer for OneToOneRingBuffer {
             messages_read += 1;
         }
         if bytes_read > 0 {
-            // buffer.put_long_ordered(head_position_index, head + bytes_read as i64);
-            buffer.put_long_volatile(head_position_index, head + bytes_read as i64);
+            buffer.put_long_ordered(head_position_index, head + bytes_read as i64);
         }
         messages_read
     }
