@@ -12,22 +12,6 @@ use Ringo::bit_util::SIZE_OF_LONG;
 
 const MAX_IN_FLIGHTS: u32 = 1000;
 
-#[derive(Clone, Debug)]
-struct MyClass {
-    seq: i32,
-    ts: i64,
-}
-
-impl MyClass {
-    // Associated function to create a new `MyClass` instance
-    fn new(seq: i32, ts: i64) -> Self {
-        MyClass {
-            seq,
-            ts,
-        }
-    }
-}
-
 fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
     match cap {
         None => unbounded(),
@@ -36,8 +20,8 @@ fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
 }
 
 fn spsc_chan(cap: Option<usize>) {
-    let (tx1, rx1) : (Sender<MyClass>, Receiver<MyClass>) = new(cap);
-    let (tx2, rx2) : (Sender<MyClass>, Receiver<MyClass>) = new(cap);
+    let (tx1, rx1) : (Sender<i64>, Receiver<i64>) = new(cap);
+    let (tx2, rx2) : (Sender<i64>, Receiver<i64>) = new(cap);
     // let (tx1, rx1) : (Sender<Box<MyClass>>, Receiver<Box<MyClass>>) = new(cap);
     // let (tx2, rx2) : (Sender<Box<MyClass>>, Receiver<Box<MyClass>>) = new(cap);
 
@@ -58,20 +42,17 @@ fn spsc_chan(cap: Option<usize>) {
             }
         });
 
-        let mut set = HashSet::new();
-        let mut seq = 1;
+        let mut ctr = 0;
         let mut histogram = Histogram::<u64>::new(3).unwrap();
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            if set.len() < MAX_IN_FLIGHTS as usize {
+            if ctr < MAX_IN_FLIGHTS as usize {
                 let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as i64;
-                let msg = MyClass::new(seq, ts);
                 // let msg = Arc::new(MyClass::new(seq, ts));
                 // let msg = Box::new(MyClass::new(seq, ts));
-                if tx1.try_send(msg.clone()).is_ok() {
-                    set.insert(seq);
-                    seq += 1;
+                if tx1.try_send(ts).is_ok() {
+                    ctr += 1;
                 }
             }
             loop {
@@ -79,9 +60,9 @@ fn spsc_chan(cap: Option<usize>) {
                     Ok(value) => {
                         let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)
                             .unwrap()
-                            .as_nanos() as i64 - value.ts;
+                            .as_nanos() as i64 - value;
                         histogram.record(elapsed as u64).unwrap();
-                        set.remove(&value.seq);
+                        ctr -= 1;
                     }
                     Err(_) => break,
                 }
@@ -93,8 +74,8 @@ fn spsc_chan(cap: Option<usize>) {
 }
 
 fn spsc(cap: usize) {
-    let q1 : AtomicRingBuffer<MyClass> = AtomicRingBuffer::with_capacity(cap);
-    let q2 : AtomicRingBuffer<MyClass> = AtomicRingBuffer::with_capacity(cap);
+    let q1 = AtomicRingBuffer::with_capacity(cap);
+    let q2 = AtomicRingBuffer::with_capacity(cap);
 
     crossbeam::scope(|scope| {
         scope.spawn(|_| {
@@ -113,19 +94,16 @@ fn spsc(cap: usize) {
             }
         });
 
-        let mut set = HashSet::new();
-        let mut seq = 1;
+        let mut ctr = 0;
         let mut histogram = Histogram::<u64>::new(3).unwrap();
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
-            if set.len() < MAX_IN_FLIGHTS as usize {
+            if ctr < MAX_IN_FLIGHTS as usize {
                 let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as i64;
-                let msg = MyClass::new(seq, ts);
-                match q1.try_push(msg) {
+                match q1.try_push(ts) {
                     Ok(_) => {
-                        set.insert(seq);
-                        seq += 1;
+                        ctr += 1;
                     }
                     Err(_) => {}
                 }
@@ -135,9 +113,9 @@ fn spsc(cap: usize) {
                     Some(value) => {
                         let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)
                             .unwrap()
-                            .as_nanos() as i64 - value.ts;
+                            .as_nanos() as i64 - value;
                         histogram.record(elapsed as u64).unwrap();
-                        set.remove(&value.seq);
+                        ctr -= 1;
                     }
                     None => break,
                 }
@@ -163,58 +141,68 @@ fn write(seq: i64, now_ns: i64, buffer: &OneToOneRingBuffer) -> bool {
     false
 }
 
+fn write0(now_ns: i64, buffer: &OneToOneRingBuffer) -> bool {
+    let idx = buffer.try_claim(1, SIZE_OF_LONG);
+    // println!("idx: {:?}", idx);
+    if idx > 0 {
+        let buf = buffer.buffer();
+        buf.put_long(idx, now_ns);
+        buffer.commit(idx);
+        return true;
+    }
+    false
+}
+
 fn spsc_own(cap: usize) {
     let buf1 = UnsafeBuffer::new(cap);
     let buf2 = UnsafeBuffer::new(cap);
     let rb1 = OneToOneRingBuffer::new(buf1);
     let rb2 = OneToOneRingBuffer::new(buf2);
 
-    // let rb1 = Arc::new(OneToOneRingBuffer::new(buf1));
-    // let rb2 = Arc::new(OneToOneRingBuffer::new(buf2));
-    // let rb1_cloned = Arc::clone(&rb1);
-
     crossbeam::scope(|scope| {
         scope.spawn(|_| {
             let closure = |msg_type: i32, buffer: &UnsafeBuffer, index: i32, length: i32| {
-                let seq = buffer.get_long(index);
-                let rb1_offset = index + SIZE_OF_LONG;
-                let ts = buffer.get_long(rb1_offset);
+                // let seq = buffer.get_long(index);
+                // let offset = index + SIZE_OF_LONG;
+                let ts = buffer.get_long(index);
                 loop {
-                    if write(seq, ts, &rb2) {
+                    if write0(ts, &rb2) {
                         break;
                     }
                 }
             };
             loop {
-                // thread::sleep(Duration::from_millis(550));
                 rb1.read0(closure, 500);
             }
         });
 
-        let mut set : HashSet<i64> = HashSet::new();
-        let mut seq : i64 = 1;
+        // let mut set = HashSet::new();
+        // let mut seq : i64 = 1;
+        let mut ctr = 0;
         let mut histogram = Histogram::<u64>::new(3).unwrap();
         let mut ori_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         loop {
             // thread::sleep(Duration::from_micros(100000));
-            if set.len() < MAX_IN_FLIGHTS as usize {
+            if ctr < MAX_IN_FLIGHTS as usize {
                 let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as i64;
-                if write(seq, ts, &rb1) {
-                    set.insert(seq);
+                if write0(ts, &rb1) {
+                    // set.insert(seq);
                     // println!("Sent: {}", seq);
-                    seq += 1;
+                    // seq += 1;
+                    ctr += 1;
                 }
             }
             let closure = |msg_type: i32, buffer: &UnsafeBuffer, index: i32, length: i32| {
-                let seq = buffer.get_long(index);
-                let offset = index + SIZE_OF_LONG;
-                let ts = buffer.get_long(offset);
+                // let seq = buffer.get_long(index);
+                // let offset = index + SIZE_OF_LONG;
+                let ts = buffer.get_long(index);
                 let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_nanos() as i64 - ts;
                 histogram.record(elapsed as u64).unwrap();
-                set.remove(&seq);
+                // set.remove(&seq);
+                ctr -= 1;
                 // println!("Received: {}", seq);
             };
             rb2.read0(closure, 500);

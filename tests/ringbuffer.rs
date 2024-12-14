@@ -26,8 +26,8 @@ fn test_try_claim() {
                 buf.put_int(index + 28, i + 1);
                 ring_buffer.commit(index);
             }
-        // }//);}
-        // for i in 0..10 {
+        }//);}
+        for i in 0..10 {
         //let consumer = thread::spawn(|| {
             ring_buffer.read0(|msg_type, buffer, index, length| {
                 let x = buffer.get_int(index + 28);
