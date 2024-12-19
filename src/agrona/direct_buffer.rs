@@ -5,7 +5,7 @@ const STR_HEADER_LEN: i32 = SIZE_OF_INT;
 
 pub trait DirectBuffer {
     fn address_offset(&self) -> i32;
-    fn byte_array(&self) -> &[u8];
+    fn byte_array(&self) -> *mut u8;
     fn capacity(&self) -> i32;
     fn check_limit(&self, limit: i32) -> Result<(), String>;
     fn get_long(&self, index: i32) -> i64;

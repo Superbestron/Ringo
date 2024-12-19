@@ -1,3 +1,5 @@
+use std::alloc::alloc;
+use std::alloc::Layout;
 use crate::agrona::concurrent::atomic_buffer::AtomicBuffer;
 use crate::agrona::concurrent::ringbuffer::ring_buffer_descriptor::TRAILER_LENGTH;
 use crate::agrona::direct_buffer::DirectBuffer;
@@ -9,7 +11,7 @@ const SHOULD_BOUNDS_CHECK: bool = false;
 pub struct UnsafeBuffer {
     // not sure if to use a bytebuffer
     wrap_adjustment: i32,
-    byte_array: Box<[u8]>,
+    byte_array: *mut u8,
     address_offset: i32,
     capacity: i32,
 }
@@ -49,10 +51,14 @@ unsafe fn atomic_store<T: Copy>(dst: *mut T, val: T, order: Ordering) {
 impl UnsafeBuffer {
     pub fn new(capacity: usize) -> Self {
         let actual_capacity = capacity + TRAILER_LENGTH as usize;
-        let mut tmp = vec![0u8; actual_capacity].into_boxed_slice();
+        let layout = Layout::array::<u8>(actual_capacity).expect("Invalid layout");
+
+        // Allocate memory
+        let byte_array = unsafe { alloc(layout) };
+
         UnsafeBuffer {
             wrap_adjustment: 0,
-            byte_array: tmp,
+            byte_array,
             address_offset: 0,
             capacity: actual_capacity as i32,
         }
@@ -97,7 +103,7 @@ impl AtomicBuffer for UnsafeBuffer {
 
     fn get_long_volatile(&self, index: i32) -> i64 {
         unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *const i64;
             atomic_load(ptr, SeqCst)
             // ptr::read_volatile(ptr)
         }
@@ -105,15 +111,14 @@ impl AtomicBuffer for UnsafeBuffer {
 
     fn put_long_volatile(&mut self, index: i32, value: i64) {
         unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *mut i64;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *mut i64;
             atomic_store(ptr, value, SeqCst);
         }
     }
 
     fn put_long_ordered(&mut self, index: i32, value: i64) {
         unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i64;
-            // ptr::write_unaligned(ptr, value);
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *mut i64;
             atomic_store(ptr, value, Release);
         }
     }
@@ -136,7 +141,7 @@ impl AtomicBuffer for UnsafeBuffer {
 
     fn get_int_volatile(&self, index: i32) -> i32 {
         unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i32;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *const i32;
             // ptr::read_volatile(ptr)
             atomic_load(ptr, SeqCst)
         }
@@ -144,7 +149,7 @@ impl AtomicBuffer for UnsafeBuffer {
 
     fn put_int_volatile(&mut self, index: i32, value: i32) {
         unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *mut i32;
             // ptr::write_volatile(ptr, value)
             atomic_store(ptr, value, SeqCst)
         }
@@ -152,7 +157,7 @@ impl AtomicBuffer for UnsafeBuffer {
 
     fn put_int_ordered(&mut self, index: i32, value: i32) {
         unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *mut i32;
             // ptr::write_unaligned(ptr, value)
             atomic_store(ptr, value, Release);
         }
@@ -204,8 +209,8 @@ impl DirectBuffer for UnsafeBuffer {
         self.address_offset
     }
 
-    fn byte_array(&self) -> &[u8] {
-        &self.byte_array
+    fn byte_array(&self) -> *mut u8 {
+        self.byte_array
     }
 
     fn capacity(&self) -> i32 {
@@ -221,7 +226,7 @@ impl DirectBuffer for UnsafeBuffer {
 
     fn get_long(&self, index: i32) -> i64 {
         unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i64;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *const i64;
             // ptr::read_unaligned(ptr)
             atomic_load(ptr, Relaxed)
         }
@@ -229,7 +234,7 @@ impl DirectBuffer for UnsafeBuffer {
 
     fn get_int(&self, index: i32) -> i32 {
         unsafe {
-            let ptr = self.byte_array.as_ptr().add((self.address_offset + index) as usize) as *const i32;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *const i32;
             // ptr::read_unaligned(ptr)
             atomic_load(ptr, Relaxed)
         }
@@ -328,7 +333,7 @@ impl DirectBuffer for UnsafeBuffer {
 
     fn put_long(&mut self, index: i32, value: i64) {
         unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i64;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *mut i64;
             // ptr::write_unaligned(ptr, value)
             atomic_store(ptr, value, Relaxed);
         }
@@ -336,7 +341,7 @@ impl DirectBuffer for UnsafeBuffer {
 
     fn put_int(&mut self, index: i32, value: i32) {
         unsafe {
-            let ptr = self.byte_array.as_mut_ptr().add((self.address_offset + index) as usize) as *mut i32;
+            let ptr = self.byte_array.add((self.address_offset + index) as usize) as *mut i32;
             // ptr::write_unaligned(ptr, value)
             atomic_store(ptr, value, Relaxed)
         }
