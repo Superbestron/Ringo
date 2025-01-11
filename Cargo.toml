@@ -12,7 +12,7 @@ loom = "0.7.2"
 resolver = "2"
 members = [
     ".",
-    "benchmarks", "hello", "minigrep",
+    "benchmarks", "hello", "hello-async", "minigrep",
 ]
 
 [workspace.lints.rust]
